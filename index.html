@@ -1,0 +1,171 @@
+<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>ZipPlay</title>
+<style>
+:root{--bg:#fff;--fg:#14161a;--mut:#6b7280;--card:#f3f4f6;--bd:#e5e7eb;--ac:#4f46e5;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1115;--fg:#f1f2f4;--mut:#9aa0aa;--card:#1a1d24;--bd:#2a2e38;--ac:#818cf8}}
+:root[data-theme=dark]{--bg:#0f1115;--fg:#f1f2f4;--mut:#9aa0aa;--card:#1a1d24;--bd:#2a2e38;--ac:#818cf8}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+header{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--bd)}
+header b{font-size:18px;margin-right:auto;color:var(--ac)}
+main{max-width:900px;margin:0 auto;padding:14px}
+button,input,select{font:inherit;color:var(--fg)}
+button{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:7px 12px;cursor:pointer}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff}
+input{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:8px;width:100%;margin:4px 0 10px}
+input[type=color]{width:44px;height:36px;padding:2px;margin:0}
+.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px}
+.c h3{margin:0 0 4px;font-size:16px}.m{color:var(--mut);font-size:13px}
+.tag{display:inline-block;background:var(--bd);border-radius:20px;padding:1px 8px;font-size:12px;margin:2px 2px 0 0}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;align-items:center}
+.v{width:100%;height:60vh;border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:#1b1e27;position:relative}
+iframe{width:100%;height:100%;border:0;background:#000}
+.err{color:#dc2626}.ok{color:#16a34a}
+</style></head><body>
+<header id="hd"></header><main id="app"></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=s=>document.querySelector(s),app=$('#app'),MAX=10*1024*1024;
+const E=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let db,me=null,cl=[];
+const P=(s,m,f)=>new Promise((ok,no)=>{const t=db.transaction(s,m),r=f(t.objectStore(s));t.oncomplete=()=>ok(r.result);t.onerror=()=>no(t.error)});
+const get=(s,k)=>P(s,'readonly',o=>o.get(k)),put=(s,v)=>P(s,'readwrite',o=>o.put(v)),all=s=>P(s,'readonly',o=>o.getAll()),del=(s,k)=>P(s,'readwrite',o=>o.delete(k));
+const openDB=()=>new Promise((ok,no)=>{const r=indexedDB.open('zipplay',1);r.onupgradeneeded=()=>{const d=r.result;d.createObjectStore('users',{keyPath:'email'});d.createObjectStore('games',{keyPath:'id'});d.createObjectStore('files',{keyPath:'id'})};r.onsuccess=()=>{db=r.result;ok()};r.onerror=()=>no(r.error)});
+const hx=async s=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+const sess=v=>{try{if(v===undefined)return localStorage.getItem('zp_me');v?localStorage.setItem('zp_me',v):localStorage.removeItem('zp_me')}catch(e){}};
+
+/* ---------- Üst menü ---------- */
+function hd(){$('#hd').innerHTML=`<b>▣ ZipPlay</b><button onclick="location.hash='#/'">Ana sayfa</button><button onclick="location.hash='#/editor'">3D Editör</button><button onclick="location.hash='#/upload'">Yükle</button>`+(me?`<button onclick="location.hash='#/u/'+encodeURIComponent(me.email)">${E(me.name)}</button><button onclick="out()">Çıkış</button>`:`<button class="p" onclick="location.hash='#/login'">Giriş</button>`)}
+function out(){me=null;sess(null);hd();location.hash='#/'}
+
+/* ---------- Giriş / Kayıt ---------- */
+function loginV(){app.innerHTML=`<h2>Giriş / Kayıt</h2><p class="m">E-posta ve şifre yeterli. Doğrulama e-postası gönderilmez.</p><input id="em" type="email" placeholder="E-posta" autocomplete="email"><input id="pw" type="password" placeholder="Şifre (en az 6 karakter)" autocomplete="current-password"><div class="row"><button class="p" onclick="auth(0)">Giriş yap</button><button onclick="auth(1)">Kayıt ol</button></div><div id="st" class="err"></div>`}
+async function auth(reg){const email=$('#em').value.trim().toLowerCase(),pw=$('#pw').value,st=$('#st');
+ if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))return st.textContent='Geçerli bir e-posta yaz.';
+ if(pw.length<6)return st.textContent='Şifre en az 6 karakter olmalı.';
+ const u=await get('users',email);
+ if(reg){if(u)return st.textContent='Bu e-posta zaten kayıtlı.';const salt=crypto.randomUUID();me={email,name:email.split('@')[0],salt,h:await hx(salt+pw)};await put('users',me)}
+ else{if(!u||u.h!==await hx(u.salt+pw))return st.textContent='E-posta veya şifre yanlış.';me=u}
+ sess(email);hd();location.hash='#/'}
+
+/* ---------- Kartlar / ana sayfa ---------- */
+async function card(g,users){const liked=me&&g.likes.includes(me.email),o=users[g.owner];
+ return `<div class="c"><h3>${E(g.title)}</h3><div class="m">${g.type==='scene'?'3D sahne':'ZIP oyun'} · <a href="#/u/${encodeURIComponent(g.owner)}" style="color:var(--ac)">${E(o?o.name:'?')}</a></div><div>${g.tags.map(t=>`<span class="tag">${E(t)}</span>`).join('')}</div><div class="row"><button class="p" onclick="location.hash='#/play/${g.id}'">Oyna</button><button onclick="like('${g.id}')">${liked?'♥':'♡'} ${g.likes.length}</button></div></div>`}
+async function like(id){if(!me)return location.hash='#/login';const g=await get('games',id),i=g.likes.indexOf(me.email);i<0?g.likes.push(me.email):g.likes.splice(i,1);await put('games',g);route()}
+async function home(tab){tab=tab||'rec';const gs=await all('games'),us={};(await all('users')).forEach(u=>us[u.email]=u);
+ const lt=new Set();if(me)gs.filter(g=>g.likes.includes(me.email)).forEach(g=>g.tags.forEach(t=>lt.add(t)));
+ const sc=g=>g.likes.length+(me?g.tags.filter(t=>lt.has(t)).length*3-(g.owner===me.email?5:0):0);
+ gs.sort(tab==='new'?(a,b)=>b.t-a.t:tab==='pop'?(a,b)=>b.likes.length-a.likes.length:(a,b)=>sc(b)-sc(a));
+ let h=`<div class="row">${[['rec','Önerilen'],['pop','Popüler'],['new','Yeni']].map(([k,n])=>`<button class="${k===tab?'p':''}" onclick="home('${k}')">${n}</button>`).join('')}</div>`;
+ h+=gs.length?`<div class="g">${(await Promise.all(gs.map(g=>card(g,us)))).join('')}</div>`:`<p class="m">Henüz oyun yok. İlk oyunu sen yükle ya da 3D Editör ile yap.</p>`;
+ app.innerHTML=h}
+
+/* ---------- Profil ---------- */
+async function profile(email){const u=await get('users',email);if(!u)return app.innerHTML='<p>Kullanıcı yok.</p>';
+ const gs=(await all('games')).filter(g=>g.owner===email),us={[email]:u},own=me&&me.email===email,lk=gs.reduce((a,g)=>a+g.likes.length,0);
+ app.innerHTML=`<h2>${E(u.name)}</h2><p class="m">${gs.length} oyun · ${lk} beğeni${own?' · '+E(u.email):''}</p>`+(own?`<div class="row"><input id="nn" value="${E(u.name)}" style="width:200px;margin:0"><button onclick="rename()">Adı değiştir</button></div>`:'')+`<div class="g">${(await Promise.all(gs.map(async g=>(await card(g,us)).replace(/<\/div><\/div>$/,'')+(own?`<button onclick="rm('${g.id}')">Sil</button>`:'')+'</div></div>'))).join('')}</div>`}
+async function rename(){const n=$('#nn').value.trim().slice(0,30);if(!n)return;me.name=n;await put('users',me);hd();route()}
+async function rm(id){if(!confirm('Silinsin mi?'))return;await del('games',id);await del('files',id);route()}
+
+/* ---------- ZIP tarama ---------- */
+const BAD=/\.(exe|dll|bat|cmd|msi|scr|com|sh|jar|apk|vbs|ps1|lnk|app|dmg|so|dylib|pif|reg|wsf)$/i;
+const SUS=[[/document\.cookie/,'çerez erişimi'],[/window\.(parent|top)\b|\btop\.location|parent\.postMessage/,'üst pencereye erişim'],[/eval\s*\(\s*atob/,'gizlenmiş kod'],[/coinhive|cryptonight|minero|webminer/i,'kripto madencisi'],[/<script[^>]+src=["']\s*(https?:)?\/\//i,'dış script'],[/location\s*(\.href)?\s*=\s*["']https?:/,'dış sayfaya yönlendirme']];
+const pre=names=>names.includes('index.html')?'':(names.find(n=>/^[^/]+\/index\.html$/.test(n))||'').replace('index.html','');
+async function scan(file,log){
+ if(file.size>MAX)throw'ZIP 10 MB sınırını aşıyor ('+(file.size/1048576).toFixed(1)+' MB). Oyunu küçült.';
+ if(!/\.zip$/i.test(file.name))throw'Sadece .zip yüklenebilir.';
+ let z;try{z=await JSZip.loadAsync(file)}catch(e){throw'Geçersiz ZIP dosyası.'}
+ const names=Object.keys(z.files).filter(n=>!z.files[n].dir);let tot=0;
+ if(!names.length)throw'ZIP boş.';if(names.length>3000)throw'Çok fazla dosya.';
+ const p=pre(names);if(!names.includes(p+'index.html'))throw'ZIP içinde index.html yok. Tarayıcıda çalışan (WebGL/WebAssembly) derleme gerekir. Ham C#/C++ kaynağı veya .exe çalışmaz.';
+ for(const n of names){log('Taranıyor: '+n);
+  if(n.startsWith('/')||n.includes('..'))throw'Tehlikeli dosya yolu: '+n;
+  if(BAD.test(n))throw'Yasaklı dosya türü: '+n;
+  const u=await z.file(n).async('uint8array');tot+=u.length;if(tot>150*1048576)throw'Açılmış boyut çok büyük (zip bombası şüphesi).';
+  const m=[u[0],u[1],u[2],u[3]].join();
+  if(m==='77,90,144,0'||/^77,90,/.test(m)||m==='127,69,76,70'||m==='207,250,237,254'||m==='254,237,250,207'||m==='202,254,186,190')throw'Çalıştırılabilir ikili dosya tespit edildi: '+n;
+  if(/\.(js|html|htm|css)$/i.test(n)){const s=new TextDecoder().decode(u);for(const[r,d]of SUS)if(r.test(s))throw`Şüpheli içerik (${d}): ${n}`}}
+ return names.length}
+
+/* ---------- Yükleme ---------- */
+function uploadV(){if(!me)return location.hash='#/login';
+ app.innerHTML=`<h2>Oyun yükle</h2><p class="m">ZIP en fazla 10 MB. İçinde index.html olan, tarayıcıda çalışan bir derleme olmalı (ör. Unity C# → WebGL, C++ → Emscripten/WebAssembly). 60 MB'lık oyunu önce kendi cihazında küçültüp zip'le.</p><input id="ti" placeholder="Oyun adı" maxlength="60"><input id="tg" placeholder="Etiketler (virgülle): aksiyon, 3d, yarış"><input id="fl" type="file" accept=".zip"><div class="row"><button class="p" id="ub" onclick="upload()">Tara ve yükle</button></div><div id="st" class="m"></div>`}
+async function upload(){const st=$('#st'),f=$('#fl').files[0],ti=$('#ti').value.trim();
+ if(!ti||!f){st.className='err';return st.textContent='Ad ve ZIP seç.'}
+ $('#ub').disabled=true;st.className='m';
+ try{const n=await scan(f,t=>st.textContent=t);const id=crypto.randomUUID();
+  await put('files',{id,blob:f});
+  await put('games',{id,type:'zip',title:ti,tags:tags($('#tg').value),owner:me.email,likes:[],t:Date.now()});
+  st.className='ok';st.textContent=`Temiz görünüyor (${n} dosya). Yüklendi.`;setTimeout(()=>location.hash='#/play/'+id,700)}
+ catch(e){st.className='err';st.textContent='Reddedildi: '+(e.message||e);$('#ub').disabled=false}}
+const tags=s=>[...new Set(s.split(',').map(t=>t.trim().toLowerCase()).filter(Boolean))].slice(0,6);
+
+/* ---------- 3D sahne ---------- */
+function Scene(el,edit){
+ const r=new THREE.WebGLRenderer({antialias:true}),sc=new THREE.Scene(),cam=new THREE.PerspectiveCamera(60,1,.1,200);
+ r.setClearColor(0x1b1e27);el.appendChild(r.domElement);r.domElement.style.cssText='width:100%;height:100%;display:block;touch-action:none';
+ sc.add(new THREE.AmbientLight(0xffffff,.65));const dl=new THREE.DirectionalLight(0xffffff,.8);dl.position.set(5,10,7);sc.add(dl);
+ sc.add(new THREE.GridHelper(20,20,0x555a66,0x333843));
+ const G={cube:()=>new THREE.BoxGeometry(1,1,1),sphere:()=>new THREE.SphereGeometry(.5,24,16),cylinder:()=>new THREE.CylinderGeometry(.5,.5,1,24),cone:()=>new THREE.ConeGeometry(.5,1,24)};
+ let az=.7,ev=.5,d=12,run=true;const S={objs:[],sel:-1,onsel(){}};
+ S.add=(o)=>{const m=new THREE.Mesh(G[o.type](),new THREE.MeshStandardMaterial({color:o.color}));m.position.set(...o.pos);m.scale.setScalar(o.s);sc.add(m);o.m=m;S.objs.push(o);return S.objs.length-1};
+ S.select=i=>{S.objs.forEach(o=>o.m.material.emissive.setHex(0));S.sel=i;if(i>=0)S.objs[i].m.material.emissive.setHex(0x333355);S.onsel(S.objs[i])};
+ S.new=t=>{const i=S.add({type:t,color:'#'+Math.floor(Math.random()*0x888888+0x777777).toString(16),pos:[0,.5,0],s:1});S.select(i)};
+ S.move=(x,y,z)=>{const o=S.objs[S.sel];if(!o)return;o.pos=[o.pos[0]+x,o.pos[1]+y,o.pos[2]+z];o.m.position.set(...o.pos)};
+ S.size=f=>{const o=S.objs[S.sel];if(!o)return;o.s=Math.min(20,Math.max(.1,+(o.s*f).toFixed(3)));o.m.scale.setScalar(o.s)};
+ S.color=c=>{const o=S.objs[S.sel];if(!o)return;o.color=c;o.m.material.color.set(c)};
+ S.remove=()=>{const o=S.objs[S.sel];if(!o)return;sc.remove(o.m);S.objs.splice(S.sel,1);S.select(-1)};
+ S.data=()=>S.objs.map(({type,color,pos,s})=>({type,color,pos,s}));
+ S.load=a=>{a.forEach(o=>S.add({...o}));S.select(-1)};
+ let dn=null;const c=r.domElement;
+ c.onpointerdown=e=>{dn=[e.clientX,e.clientY,e.clientX,e.clientY];c.setPointerCapture(e.pointerId)};
+ c.onpointermove=e=>{if(!dn)return;az-=(e.clientX-dn[2])*.01;ev=Math.max(.05,Math.min(1.5,ev+(e.clientY-dn[3])*.01));dn[2]=e.clientX;dn[3]=e.clientY};
+ c.onpointerup=e=>{if(dn&&edit&&Math.hypot(e.clientX-dn[0],e.clientY-dn[1])<5){const b=c.getBoundingClientRect(),rc=new THREE.Raycaster();rc.setFromCamera({x:(e.clientX-b.left)/b.width*2-1,y:-((e.clientY-b.top)/b.height*2-1)},cam);const h=rc.intersectObjects(S.objs.map(o=>o.m))[0];S.select(h?S.objs.findIndex(o=>o.m===h.object):-1)}dn=null};
+ c.onwheel=e=>{e.preventDefault();d=Math.max(3,Math.min(40,d+e.deltaY*.01))};
+ (function loop(){if(!run)return;if(c.width!==el.clientWidth||c.height!==el.clientHeight){r.setSize(el.clientWidth,el.clientHeight,false);cam.aspect=el.clientWidth/Math.max(1,el.clientHeight);cam.updateProjectionMatrix()}
+  cam.position.set(d*Math.cos(ev)*Math.sin(az),d*Math.sin(ev),d*Math.cos(ev)*Math.cos(az));cam.lookAt(0,0,0);r.render(sc,cam);requestAnimationFrame(loop)})();
+ S.stop=()=>{run=false;r.dispose()};cl.push(S.stop);return S}
+
+/* ---------- Editör ---------- */
+let ED=null;
+function editorV(){
+ app.innerHTML=`<h2>3D Editör</h2><p class="m">Şekil ekle, tıklayıp seç. Ok tuşları: sol/sağ = X, yukarı/aşağı = Z. Q/E = yükseklik, +/− = büyüklük, Delete = sil. Sürükle = kamera. Mobilde alttaki düğmeler.</p>
+ <div class="row">${['cube','sphere','cylinder','cone'].map(t=>`<button onclick="ED.new('${t}')">+ ${{cube:'Küp',sphere:'Küre',cylinder:'Silindir',cone:'Koni'}[t]}</button>`).join('')}<input type="color" id="cc" oninput="ED.color(this.value)"><button onclick="ED.remove()">Sil</button></div>
+ <div class="v" id="vw"></div>
+ <div class="row"><button onclick="ED.move(-.5,0,0)">←</button><button onclick="ED.move(.5,0,0)">→</button><button onclick="ED.move(0,0,-.5)">↑</button><button onclick="ED.move(0,0,.5)">↓</button><button onclick="ED.move(0,.5,0)">Y+</button><button onclick="ED.move(0,-.5,0)">Y−</button><button onclick="ED.size(1.2)">Büyüt</button><button onclick="ED.size(1/1.2)">Küçült</button></div>
+ <input id="ti" placeholder="Oyun/sahne adı" maxlength="60"><input id="tg" placeholder="Etiketler (virgülle)">
+ <div class="row"><button class="p" onclick="pubScene()">Yayınla</button><button onclick="dlScene()">JSON indir</button></div><div id="st" class="m"></div>`;
+ ED=Scene($('#vw'),true);ED.onsel=o=>{if(o)$('#cc').value=o.color};
+ const k=e=>{if(/INPUT/.test(e.target.tagName))return;const m={ArrowLeft:[-.5,0,0],ArrowRight:[.5,0,0],ArrowUp:[0,0,-.5],ArrowDown:[0,0,.5],q:[0,.5,0],e:[0,-.5,0],PageUp:[0,.5,0],PageDown:[0,-.5,0]}[e.key];
+  if(m){e.preventDefault();ED.move(...m)}else if(e.key==='+'||e.key==='=')ED.size(1.2);else if(e.key==='-')ED.size(1/1.2);else if(e.key==='Delete'||e.key==='Backspace')ED.remove()};
+ document.addEventListener('keydown',k);cl.push(()=>document.removeEventListener('keydown',k))}
+async function pubScene(){const st=$('#st'),ti=$('#ti').value.trim();if(!me)return location.hash='#/login';
+ if(!ti||!ED.objs.length){st.className='err';return st.textContent='Ad yaz ve en az bir nesne ekle.'}
+ const id=crypto.randomUUID();await put('games',{id,type:'scene',title:ti,tags:tags($('#tg').value),owner:me.email,likes:[],t:Date.now(),scene:ED.data()});location.hash='#/play/'+id}
+function dlScene(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(ED.data())],{type:'application/json'}));a.download='sahne.json';a.click()}
+
+/* ---------- Oynat ---------- */
+const MIME={js:'text/javascript',css:'text/css',wasm:'application/wasm',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',svg:'image/svg+xml',json:'application/json',mp3:'audio/mpeg',ogg:'audio/ogg',wav:'audio/wav',html:'text/html'};
+const ex=n=>n.split('.').pop().toLowerCase(),rx=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+async function play(id){const g=await get('games',id);if(!g)return app.innerHTML='<p>Oyun bulunamadı.</p>';
+ app.innerHTML=`<h2>${E(g.title)}</h2><p class="m">${g.type==='scene'?'Sürükle: kamera · tekerlek: yakınlaştır':'ZIP oyun, izole (sandbox) çerçevede çalışıyor'}</p><div class="v" id="vw"></div><div class="row"><button onclick="like('${g.id}')">♥ ${g.likes.length}</button><button onclick="fs()">Tam ekran</button></div>`;
+ if(g.type==='scene'){Scene($('#vw'),false).load(g.scene);return}
+ try{const f=await get('files',id),z=await JSZip.loadAsync(f.blob),names=Object.keys(z.files).filter(n=>!z.files[n].dir),p=pre(names),rel=n=>n.slice(p.length),U={};
+  const mk=(n,b)=>{const u=URL.createObjectURL(new Blob([b],{type:MIME[ex(n)]||'application/octet-stream'}));U[rel(n)]=u;return u};
+  cl.push(()=>Object.values(U).forEach(URL.revokeObjectURL));
+  const sub=s=>{for(const k of Object.keys(U).sort((a,b)=>b.length-a.length))s=s.replace(new RegExp('(?<![\\w./-])(?:\\./)?'+rx(k),'g'),U[k]);return s};
+  const T=n=>/^(js|css|html)$/.test(ex(n));
+  for(const n of names)if(!T(n))mk(n,await z.file(n).async('blob'));
+  for(const n of names)if(ex(n)!=='html'&&T(n))mk(n,sub(await z.file(n).async('string')));
+  const fr=document.createElement('iframe');fr.setAttribute('sandbox','allow-scripts allow-pointer-lock allow-fullscreen');fr.allow='fullscreen;autoplay;gamepad';
+  fr.srcdoc=sub(await z.file(p+'index.html').async('string'));$('#vw').appendChild(fr)}
+ catch(e){$('#vw').innerHTML='<p class="err" style="padding:14px">Oyun açılamadı: '+E(e.message||e)+'</p>'}}
+function fs(){const v=$('#vw');(v.requestFullscreen||v.webkitRequestFullscreen||(()=>{})).call(v)}
+
+/* ---------- Yönlendirme ---------- */
+async function route(){cl.forEach(f=>{try{f()}catch(e){}});cl=[];ED=null;const h=location.hash.slice(2).split('/'),a=h[1]&&decodeURIComponent(h[1]);
+ try{({'':home,login:loginV,upload:uploadV,editor:editorV,u:()=>profile(a),play:()=>play(a)}[h[0]]||home)()}catch(e){app.textContent='Hata: '+e}}
+(async()=>{try{await openDB();const s=sess();if(s)me=await get('users',s)||null}catch(e){app.innerHTML='<p class="err">Tarayıcı depolaması kullanılamıyor.</p>';return}
+ hd();window.onhashchange=route;route()})();
+</script></body></html>
